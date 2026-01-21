@@ -11,6 +11,7 @@ import os
 import sys
 from saveStream_ffmpeg import SaveStream_ffmpeg
 import collections
+from report import DetectionStats
 
 class DetectionProgressBar:
     def __init__(self, total_frames, height=5):
@@ -124,7 +125,7 @@ class Detector:
             return result.plot()
         return image
 
-def process_video(source, detector, output_path, is_rtsp=False, show=False, save_mode='all'):
+def process_video(source, detector, output_path, is_rtsp=False, show=False, save_mode='all', report_stats=None):
     if is_rtsp:
         stream = RTSPStream(source)
         time.sleep(1.0)
@@ -179,6 +180,10 @@ def process_video(source, detector, output_path, is_rtsp=False, show=False, save
             saver.update_fps(ts_ms)
 
             results = detector.predict(frame)
+
+            if report_stats:
+                report_stats.update(results, frame.shape)
+
             annotated_frame = detector.draw_results(frame, results)
 
             if visual_pbar:
@@ -284,15 +289,29 @@ def main():
 
     source = args.source
 
+    # Initialize Statistics Collector
+    # Assuming YOLO default input size 640. If user changes imgsz in predict, this needs update.
+    # Currently detector(image) uses defaults.
+    # Pass conf and all class names
+    stats_collector = DetectionStats(source, args.model, input_size=(640, 640), conf_threshold=args.conf, class_names=detector.model.names)
+
     if source.startswith(('rtsp://', 'http://', 'https://')):
         print(f"Processing RTSP stream: {source}")
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         output_path = output_dir / f"rtsp_{timestamp}.mp4"
-        process_video(source, detector, output_path, is_rtsp=True, show=args.show, save_mode=args.save_mode)
+        process_video(source, detector, output_path, is_rtsp=True, show=args.show, save_mode=args.save_mode, report_stats=stats_collector)
+        # For RTSP, we might want to save report on exit.
+        # But process_video blocks until user stop.
+        report_path = output_dir / f"report_rtsp_{timestamp}.pdf"
+        stats_collector.save_report(report_path)
 
     elif os.path.isdir(source):
         print(f"Processing directory: {source}")
         folder_name = Path(source).name
+        # ...
+        # Directory logic handles multiple files. We should aggregate stats?
+        # Assuming yes, one report for the folder.
+
         save_dir = output_dir / folder_name
         save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -303,6 +322,9 @@ def main():
             img = cv2.imread(str(file_path))
             if img is None: continue
             results = detector.predict(img)
+
+            stats_collector.update(results, img.shape)
+
             annotated_frame = detector.draw_results(img, results)
             cv2.imwrite(str(save_dir / file_path.name), annotated_frame)
 
@@ -314,6 +336,9 @@ def main():
             cv2.destroyAllWindows()
         print(f"Saved results to {save_dir}")
 
+        report_path = output_dir / f"report_{folder_name}.pdf"
+        stats_collector.save_report(report_path)
+
     elif os.path.isfile(source):
         path_obj = Path(source)
         suffix = path_obj.suffix.lower()
@@ -323,16 +348,27 @@ def main():
         if suffix in video_extensions:
             print(f"Processing video: {source}")
             output_path = output_dir / f"out_{path_obj.name}"
-            process_video(source, detector, output_path, is_rtsp=False, show=args.show, save_mode=args.save_mode)
+            process_video(source, detector, output_path, is_rtsp=False, show=args.show, save_mode=args.save_mode, report_stats=stats_collector)
+
+            report_path = output_dir / f"report_{path_obj.name}.pdf"
+            stats_collector.save_report(report_path)
+
         elif suffix in image_extensions:
             print(f"Processing image: {source}")
             img = cv2.imread(source)
             if img is not None:
                 results = detector.predict(img)
+
+                stats_collector.update(results, img.shape)
+
                 annotated_frame = detector.draw_results(img, results)
                 output_path = output_dir / f"out_{path_obj.name}"
                 cv2.imwrite(str(output_path), annotated_frame)
                 print(f"Saved to {output_path}")
+
+                report_path = output_dir / f"report_{path_obj.name}.pdf"
+                stats_collector.save_report(report_path)
+
                 if args.show:
                     cv2.imshow("Detection", annotated_frame)
                     cv2.waitKey(0)
