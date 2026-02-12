@@ -125,7 +125,7 @@ class Detector:
             return result.plot()
         return image
 
-def process_video(source, detector, output_path, is_rtsp=False, show=False, save_mode='all', report_stats=None):
+def process_video(source, detector, output_path, is_rtsp=False, show=False, save_mode='all', report_stats:DetectionStats=None):
     if is_rtsp:
         stream = RTSPStream(source)
         time.sleep(1.0)
@@ -160,6 +160,11 @@ def process_video(source, detector, output_path, is_rtsp=False, show=False, save
     last_written_ts = -1.0
     recording_end_time = -1.0
 
+    # Stats counters
+    processed_frames_count = 0
+    inference_time_sum = 0.0
+    start_process_time = time.time()
+
     try:
         while True:
             # Need strict timing for buffer logic
@@ -179,7 +184,12 @@ def process_video(source, detector, output_path, is_rtsp=False, show=False, save
             # Always update FPS estimator to keep it accurate to input source
             saver.update_fps(ts_ms)
 
+            t_inf_start = time.time()
             results = detector.predict(frame)
+            t_inf_end = time.time()
+
+            processed_frames_count += 1
+            inference_time_sum += (t_inf_end - t_inf_start)
 
             if report_stats:
                 report_stats.update(results, frame.shape)
@@ -246,6 +256,30 @@ def process_video(source, detector, output_path, is_rtsp=False, show=False, save
     except KeyboardInterrupt:
         print("\nStopped by user")
     finally:
+        if report_stats:
+            total_process_time = time.time() - start_process_time
+            avg_inference_ms = (inference_time_sum / processed_frames_count * 1000) if processed_frames_count > 0 else 0
+
+            video_duration = total_process_time
+            if not is_rtsp and processed_frames_count > 0 and target_fps > 0:
+                video_duration = processed_frames_count / target_fps
+
+            device_name = str(detector.model.device)
+            if 'cuda' in device_name:
+                try:
+                    device_name = torch.cuda.get_device_name(detector.model.device.index if hasattr(detector.model.device, 'index') else 0)
+                except:
+                    pass
+
+            report_stats.add_execution_stats(
+                total_proc_time_s=total_process_time,
+                total_proc_frames=processed_frames_count,
+                avg_inference_ms=avg_inference_ms,
+                video_duration_s=video_duration,
+                video_fps=target_fps,
+                device_name=device_name
+            )
+
         if is_rtsp:
             stream.stop()
         else:
@@ -290,10 +324,19 @@ def main():
     source = args.source
 
     # Initialize Statistics Collector
-    # Assuming YOLO default input size 640. If user changes imgsz in predict, this needs update.
-    # Currently detector(image) uses defaults.
+    # Try to get input size from model
+    try:
+        imgsz = detector.model.overrides['imgsz']
+        if isinstance(imgsz, int):
+            input_size = (imgsz, imgsz)
+        else:
+            input_size = tuple(imgsz)
+    except:
+        input_size = (640, 640)
+
+    print(f"model input size: {input_size}")
     # Pass conf and all class names
-    stats_collector = DetectionStats(source, args.model, input_size=(640, 640), conf_threshold=args.conf, class_names=detector.model.names)
+    stats_collector = DetectionStats(source, args.model, input_size=input_size, conf_threshold=args.conf, class_names=detector.model.names)
 
     if source.startswith(('rtsp://', 'http://', 'https://')):
         print(f"Processing RTSP stream: {source}")

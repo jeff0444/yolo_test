@@ -5,6 +5,7 @@ import os
 from collections import defaultdict
 import datetime
 from pathlib import Path
+import time
 
 class DetectionStats:
     def __init__(self, source_name, model_name, input_size=(640, 640), conf_threshold=None, class_names=None):
@@ -19,6 +20,19 @@ class DetectionStats:
 
         self.bins = [0, 5, 8, 12, 16, 24, 32, 48, 64, 128, float('inf')]
         self.bin_labels = ['0-5', '5-8', '8-12', '12-16', '16-24', '24-32', '32-48', '48-64', '64-128', '>128']
+
+        self.execution_stats = {}
+
+    def add_execution_stats(self, total_proc_time_s, total_proc_frames, avg_inference_ms, video_duration_s, video_fps, device_name, batch_size=1):
+        self.execution_stats = {
+            "Total Processing Time": time.strftime('%H:%M:%S', time.gmtime(total_proc_time_s)),
+            "Avg Frame Proc. Time": f"{(total_proc_time_s / total_proc_frames * 1000):.2f} ms" if total_proc_frames > 0 else "N/A",
+            "Avg Inference Time": f"{avg_inference_ms:.2f} ms",
+            "Video Duration": time.strftime('%H:%M:%S', time.gmtime(video_duration_s)),
+            "Video FPS": f"{video_fps:.2f}",
+            "Device": device_name,
+            "Batch Size": batch_size
+        }
 
     def update(self, results, img_shape):
         """
@@ -51,6 +65,11 @@ class DetectionStats:
 
     def save_report(self, output_path):
         print(f"Generating PDF report: {output_path}")
+
+        # Configure font to support Chinese characters (Microsoft JhengHei for Windows)
+        plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Arial']
+        plt.rcParams['axes.unicode_minus'] = False
+
         try:
             with PdfPages(output_path) as pdf:
                 # Page 1: Summary (Portrait A4)
@@ -62,9 +81,18 @@ class DetectionStats:
                 text += f"Source: {self.source_name}\n"
                 text += f"Model: {self.model_name}\n"
                 text += f"Model Input Size: {self.input_size}\n"
-                text += f"Confidence Threshold: {self.conf_threshold}\n\n"
+                text += f"Confidence Threshold: {self.conf_threshold}\n"
 
-                text += "Class Statistics:\n"
+                if self.execution_stats:
+                    text += "\nExecution Statistics:\n"
+                    width = 0
+                    for k in self.execution_stats.keys():
+                        width = max(width, len(k))
+
+                    for k, v in self.execution_stats.items():
+                        text += f"{k:<{width + 2}}: {v}\n"
+
+                text += "\nClass Statistics:\n"
 
                 sorted_ids = sorted(self.class_names.keys())
 
@@ -76,7 +104,7 @@ class DetectionStats:
 
                 summary_content = text + "\n".join(classes_text)
 
-                plt.text(0.01, 0.99, summary_content, fontsize=12, verticalalignment='top', fontfamily='monospace',
+                plt.text(0.01, 0.99, summary_content, fontsize=12, verticalalignment='top',
                          wrap=True)
 
                 pdf.savefig()
